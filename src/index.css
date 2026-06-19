@@ -1,0 +1,125 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+  font-family: "IBM Plex Sans", system-ui, sans-serif;
+  line-height: 1.55;
+  font-weight: 400;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background-color: #0a0b0d;
+  color: #e6e8eb;
+  background-image:
+    radial-gradient(1200px 600px at 12% -8%, rgba(245, 165, 36, 0.08), transparent 60%),
+    radial-gradient(900px 500px at 100% 0%, rgba(229, 72, 77, 0.05), transparent 55%),
+    linear-gradient(rgba(255, 255, 255, 0.022) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.022) 1px, transparent 1px);
+  background-size:
+    auto,
+    auto,
+    44px 44px,
+    44px 44px;
+  background-attachment: fixed;
+}
+
+@layer components {
+  .panel {
+    @apply rounded-xl border border-ink-700 bg-ink-900/70 backdrop-blur-sm;
+  }
+  .panel-hover {
+    @apply transition-colors hover:border-ink-600;
+  }
+  .stat-num {
+    font-family: "Big Shoulders Display", sans-serif;
+    font-weight: 800;
+    letter-spacing: 0.02em;
+  }
+  .label-tag {
+    @apply font-mono text-[10px] uppercase tracking-[0.22em] text-ink-300;
+  }
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-sm font-semibold
+      transition-all duration-150 disabled:cursor-not-allowed disabled:opacity-40 select-none;
+  }
+  .btn-primary {
+    @apply bg-safety-500 text-ink-950 hover:bg-safety-400 active:scale-[0.98]
+      shadow-[0_0_0_1px_rgba(245,165,36,0.4),0_8px_24px_-12px_rgba(245,165,36,0.7)];
+  }
+  .btn-ghost {
+    @apply border border-ink-600 bg-ink-800/60 text-ink-300 hover:border-ink-500 hover:text-ink-200;
+  }
+  .btn-danger {
+    @apply border border-hazard-600 bg-hazard-500/15 text-hazard-400 hover:bg-hazard-500/25;
+  }
+  .input {
+    @apply w-full rounded-lg border border-ink-600 bg-ink-950/80 px-3.5 py-2.5 font-mono text-sm
+      text-ink-100 placeholder:text-ink-400 outline-none transition-colors
+      focus:border-safety-500 focus:ring-2 focus:ring-safety-500/25;
+  }
+  .chip {
+    @apply inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 font-mono text-[11px] font-medium tracking-wide;
+  }
+}
+
+@layer utilities {
+  .scanline {
+    position: relative;
+    overflow: hidden;
+  }
+  .scanline::after {
+    content: "";
+    position: absolute;
+    inset: 0 0 auto 0;
+    height: 14px;
+    background: linear-gradient(
+      to bottom,
+      transparent,
+      rgba(245, 165, 36, 0.5),
+      transparent
+    );
+    animation: scan 3.2s linear infinite;
+    pointer-events: none;
+  }
+  .text-balance {
+    text-wrap: balance;
+  }
+  .grain {
+    background-image: radial-gradient(rgba(255, 255, 255, 0.025) 1px, transparent 1px);
+    background-size: 3px 3px;
+  }
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: #0a0b0d;
+}
+::-webkit-scrollbar-thumb {
+  background: #2c333d;
+  border-radius: 8px;
+  border: 2px solid #0a0b0d;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #3a424e;
+}
+
+::selection {
+  background: rgba(245, 165, 36, 0.3);
+  color: #fff;
+}

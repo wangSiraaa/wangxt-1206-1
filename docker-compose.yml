@@ -1,0 +1,16 @@
+services:
+  lpg-trace:
+    build: .
+    image: lpg-cylinder-trace:latest
+    container_name: lpg-cylinder-trace
+    ports:
+      - "18506:18506"
+    environment:
+      - APP_PORT=18506
+      - NODE_ENV=production
+    volumes:
+      - lpg-data:/app/data
+    restart: unless-stopped
+
+volumes:
+  lpg-data:
