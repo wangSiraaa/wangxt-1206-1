@@ -6,12 +6,16 @@ import {
   CheckCircle2,
   Hourglass,
   RefreshCw,
+  Lock,
+  AlertTriangle,
 } from 'lucide-react';
-import { Panel, SectionTitle, Field, BlockBanner, FillingStatusBadge, Spinner, EmptyState } from '../components/ui';
+import { Panel, SectionTitle, Field, BlockBanner, LockBanner, FillingStatusBadge, Spinner, EmptyState, InfoBanner } from '../components/ui';
 import { api, ApiError } from '../lib/api';
 import { useAppStore } from '../store';
 import type { Cylinder, FillingRecord } from '@shared/types';
 import { cn } from '../lib/utils';
+
+const MAX_RECHECK = 2;
 
 function todayStr() {
   return new Date().toISOString().slice(0, 10);
@@ -21,6 +25,10 @@ function isOverdue(c: Cylinder | undefined): boolean {
   if (!c) return false;
   if (!c.inspection_expiry) return true;
   return c.inspection_expiry < todayStr();
+}
+
+function isLocked(c: Cylinder | undefined): boolean {
+  return !!c && c.locked === 1;
 }
 
 export default function Filling() {
@@ -50,14 +58,20 @@ export default function Filling() {
 
   const cylinder = useMemo(() => cylinders.find((c) => c.cylinder_code === code), [cylinders, code]);
   const overdue = isOverdue(cylinder);
+  const locked = isLocked(cylinder);
 
   const recheckQueue = fillings.filter((f) => f.status === 'recheck');
+  const blockedQueue = fillings.filter((f) => f.status === 'blocked_weight');
   const recent = fillings.slice(0, 12);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     if (!cylinder) {
       pushToast({ kind: 'warn', title: '钢瓶不存在', message: `未找到 ${code}` });
+      return;
+    }
+    if (locked) {
+      pushToast({ kind: 'block', title: '钢瓶已锁定', message: cylinder.lock_reason ?? '禁止充装', code: 'CYLINDER_LOCKED' });
       return;
     }
     const w = Number(weight);
@@ -75,7 +89,7 @@ export default function Filling() {
         station,
       });
       if (rec.status === 'recheck') {
-        pushToast({ kind: 'warn', title: '转入复称', message: `偏差 ${rec.weight_diff}kg 超出允差`, code: 'WEIGHT_OUT_OF_TOLERANCE' });
+        pushToast({ kind: 'warn', title: '转入复称', message: `偏差 ${rec.weight_diff}kg 超出允差，第1次复称`, code: 'WEIGHT_OUT_OF_TOLERANCE' });
         setRecheckId(rec.id);
       } else {
         pushToast({ kind: 'ok', title: '充装完成', message: `${cylinder.cylinder_code} · ${w}kg 正常` });
@@ -112,21 +126,47 @@ export default function Filling() {
       pushToast({ kind: 'warn', title: '复称重量无效' });
       return;
     }
+    const filling = fillings.find((f) => f.id === id);
+    const nextCount = (filling?.recheck_count ?? 0) + 1;
     try {
       const rec = await api.recheck(id, w);
       if (rec.status === 'normal') {
         pushToast({ kind: 'ok', title: '复称通过', message: `${rec.cylinder_code} 已转为正常` });
         setRecheckId(null);
         setRecheckWeight('');
-      } else {
-        pushToast({ kind: 'warn', title: '复称仍超差', message: '请重新称重', code: 'WEIGHT_OUT_OF_TOLERANCE' });
+      } else if (rec.status === 'recheck') {
+        const remaining = MAX_RECHECK - nextCount;
+        pushToast({
+          kind: 'warn',
+          title: `第${nextCount}次复称仍超差`,
+          message: `还可复称${remaining}次，若仍超差将锁定钢瓶`,
+          code: 'WEIGHT_OUT_OF_TOLERANCE',
+        });
       }
       refresh();
     } catch (e) {
       if (e instanceof ApiError) {
-        pushToast({ kind: 'block', title: '复称阻断', message: e.message, code: e.code });
-        if (e.code === 'RECORD_LOCKED_DELIVERED') setRecheckId(null);
+        if (e.code === 'RECHECK_EXCEEDED') {
+          pushToast({ kind: 'block', title: '钢瓶已锁定', message: e.message, code: e.code });
+          setRecheckId(null);
+          setRecheckWeight('');
+        } else {
+          pushToast({ kind: 'block', title: '复称阻断', message: e.message, code: e.code });
+          if (e.code === 'RECORD_LOCKED_DELIVERED') setRecheckId(null);
+        }
+        refresh();
       }
+    }
+  }
+
+  async function handleUnlock(cylinderCode: string) {
+    if (!confirm(`确定要解锁钢瓶 ${cylinderCode} 吗？`)) return;
+    try {
+      await api.unlockCylinder(cylinderCode);
+      pushToast({ kind: 'ok', title: '已解锁', message: `${cylinderCode} 钢瓶锁定已解除` });
+      refresh();
+    } catch (e) {
+      pushToast({ kind: 'block', title: '解锁失败', message: e instanceof Error ? e.message : String(e) });
     }
   }
 
@@ -134,8 +174,16 @@ export default function Filling() {
     <div className="space-y-5">
       <div>
         <h1 className="stat-num text-3xl text-ink-100 tracking-wide">充装作业台</h1>
-        <p className="text-sm text-ink-400 mt-1">扫码登记检验日期与充装重量 · 超期与超差实时阻断</p>
+        <p className="text-sm text-ink-400 mt-1">扫码登记检验日期与充装重量 · 超期与超差实时阻断 · 复称{MAX_RECHECK}次仍异常自动锁定</p>
       </div>
+
+      {locked && cylinder && (
+        <LockBanner
+          reason={cylinder.lock_reason}
+          lockedAt={cylinder.locked_at}
+          onUnlock={() => handleUnlock(cylinder.cylinder_code)}
+        />
+      )}
 
       <div className="grid lg:grid-cols-2 gap-5">
         <Panel>
@@ -169,12 +217,15 @@ export default function Filling() {
                       setBlockMsg(null);
                     }}
                     className={cn(
-                      'chip cursor-pointer transition-colors',
-                      code === c.cylinder_code
-                        ? 'border-safety-500/60 bg-safety-500/15 text-safety-300'
-                        : 'border-ink-700 bg-ink-900/60 text-ink-300 hover:border-ink-500',
+                      'chip cursor-pointer transition-colors relative',
+                      c.locked === 1
+                        ? 'border-hazard-600/50 bg-hazard-500/10 text-hazard-400'
+                        : code === c.cylinder_code
+                          ? 'border-safety-500/60 bg-safety-500/15 text-safety-300'
+                          : 'border-ink-700 bg-ink-900/60 text-ink-300 hover:border-ink-500',
                     )}
                   >
+                    {c.locked === 1 && <Lock className="w-3 h-3 inline mr-1" />}
                     {c.cylinder_code}
                   </button>
                 ))}
@@ -230,7 +281,7 @@ export default function Filling() {
                 value={weight}
                 onChange={(e) => setWeight(e.target.value)}
                 placeholder={cylinder ? `目标 ${cylinder.target_weight}` : '先选择钢瓶'}
-                disabled={!cylinder || overdue}
+                disabled={!cylinder || overdue || locked}
               />
             </Field>
             <div className="grid grid-cols-2 gap-3">
@@ -242,10 +293,13 @@ export default function Filling() {
               </Field>
             </div>
             {blockMsg && <BlockBanner code={blockMsg.code} message={blockMsg.message} />}
+            {locked && (
+              <InfoBanner message="该钢瓶已被锁定，需先解锁才能进行充装操作。" />
+            )}
             <button
               type="submit"
               className="btn btn-primary w-full"
-              disabled={submitting || !cylinder || overdue}
+              disabled={submitting || !cylinder || overdue || locked}
             >
               {submitting ? <Spinner /> : <CheckCircle2 className="w-4 h-4" />}
               确认充装登记
@@ -254,50 +308,98 @@ export default function Filling() {
         </Panel>
       </div>
 
+      {blockedQueue.length > 0 && (
+        <Panel>
+          <SectionTitle
+            icon={Lock}
+            title="已锁定钢瓶"
+            hint={`${blockedQueue.length} 瓶待处理`}
+          />
+          <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
+            {blockedQueue.map((f) => (
+              <div key={f.id} className="rounded-lg border border-hazard-600/40 bg-hazard-500/5 p-3.5">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="font-mono text-sm font-semibold text-ink-100">{f.cylinder_code}</span>
+                  <FillingStatusBadge status={f.status} />
+                </div>
+                <div className="font-mono text-xs text-ink-400 space-y-0.5">
+                  <div>首次 {f.first_weight}kg · 末次 {f.filling_weight}kg</div>
+                  <div>复称 {f.recheck_count} 次 · #{f.id}</div>
+                </div>
+                <button
+                  onClick={() => handleUnlock(f.cylinder_code)}
+                  className="btn btn-ghost w-full mt-3 py-1.5 text-xs"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" /> 申请解锁
+                </button>
+              </div>
+            ))}
+          </div>
+        </Panel>
+      )}
+
       <Panel>
         <SectionTitle icon={Scale} title="复称队列" hint={`${recheckQueue.length} 待处理`} />
         {recheckQueue.length === 0 ? (
           <EmptyState text="复称队列为空" />
         ) : (
           <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
-            {recheckQueue.map((f) => (
-              <div key={f.id} className="rounded-lg border border-recheck-500/40 bg-recheck-500/5 p-3.5">
-                <div className="flex items-center justify-between mb-2">
-                  <span className="font-mono text-sm font-semibold text-ink-100">{f.cylinder_code}</span>
-                  <FillingStatusBadge status={f.status} />
-                </div>
-                <div className="font-mono text-xs text-ink-400 space-y-0.5">
-                  <div>目标 {f.target_weight}kg · 实际 {f.filling_weight}kg</div>
-                  <div>偏差 {f.weight_diff! > 0 ? '+' : ''}{f.weight_diff}kg · #{f.id}</div>
-                </div>
-                {recheckId === f.id ? (
-                  <div className="mt-3 flex gap-2">
-                    <input
-                      className="input py-1.5 text-sm"
-                      type="number"
-                      step="0.01"
-                      placeholder="复称重量"
-                      value={recheckWeight}
-                      onChange={(e) => setRecheckWeight(e.target.value)}
-                      autoFocus
-                    />
-                    <button onClick={() => doRecheck(f.id)} className="btn btn-primary px-3">
-                      <Hourglass className="w-4 h-4" /> 复称
-                    </button>
+            {recheckQueue.map((f) => {
+              const nextCount = f.recheck_count + 1;
+              const remaining = MAX_RECHECK - nextCount;
+              return (
+                <div key={f.id} className="rounded-lg border border-recheck-500/40 bg-recheck-500/5 p-3.5">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="font-mono text-sm font-semibold text-ink-100">{f.cylinder_code}</span>
+                    <FillingStatusBadge status={f.status} />
                   </div>
-                ) : (
-                  <button
-                    onClick={() => {
-                      setRecheckId(f.id);
-                      setRecheckWeight('');
-                    }}
-                    className="btn btn-ghost w-full mt-3 py-1.5 text-xs"
-                  >
-                    <Scale className="w-3.5 h-3.5" /> 发起复称
-                  </button>
-                )}
-              </div>
-            ))}
+                  <div className="font-mono text-xs text-ink-400 space-y-0.5">
+                    <div>目标 {f.target_weight}kg · 实际 {f.filling_weight}kg</div>
+                    <div>
+                      偏差 {f.weight_diff! > 0 ? '+' : ''}{f.weight_diff}kg · 已复称{f.recheck_count}次
+                    </div>
+                    {remaining > 0 && (
+                      <div className="flex items-center gap-1 text-safety-400 mt-1">
+                        <AlertTriangle className="w-3 h-3" />
+                        还可复称{remaining}次
+                      </div>
+                    )}
+                    {remaining === 0 && (
+                      <div className="flex items-center gap-1 text-hazard-400 mt-1">
+                        <Lock className="w-3 h-3" />
+                        本次为最后一次复称机会
+                      </div>
+                    )}
+                  </div>
+                  {recheckId === f.id ? (
+                    <div className="mt-3 flex gap-2">
+                      <input
+                        className="input py-1.5 text-sm"
+                        type="number"
+                        step="0.01"
+                        placeholder="复称重量"
+                        value={recheckWeight}
+                        onChange={(e) => setRecheckWeight(e.target.value)}
+                        autoFocus
+                      />
+                      <button onClick={() => doRecheck(f.id)} className="btn btn-primary px-3">
+                        <Hourglass className="w-4 h-4" /> 复称
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      onClick={() => {
+                        setRecheckId(f.id);
+                        setRecheckWeight('');
+                      }}
+                      className="btn btn-ghost w-full mt-3 py-1.5 text-xs"
+                    >
+                      <Scale className="w-3.5 h-3.5" /> 发起复称
+                    </button>
+                  )}
+                </div>
+              );
+            })}
           </div>
         )}
       </Panel>
@@ -312,6 +414,7 @@ export default function Filling() {
                 <th className="py-2 pr-3 font-medium">钢瓶码</th>
                 <th className="py-2 pr-3 font-medium">实际/目标</th>
                 <th className="py-2 pr-3 font-medium">偏差</th>
+                <th className="py-2 pr-3 font-medium">复称</th>
                 <th className="py-2 pr-3 font-medium">状态</th>
                 <th className="py-2 pr-3 font-medium">配送</th>
                 <th className="py-2 font-medium">时间</th>
@@ -320,13 +423,18 @@ export default function Filling() {
             <tbody>
               {recent.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="py-6 text-center text-ink-400 font-mono text-xs">暂无记录</td>
+                  <td colSpan={8} className="py-6 text-center text-ink-400 font-mono text-xs">暂无记录</td>
                 </tr>
               ) : (
                 recent.map((f) => (
                   <tr key={f.id} className="border-b border-ink-900/70 hover:bg-ink-900/40">
                     <td className="py-2 pr-3 font-mono text-ink-500">{f.id}</td>
-                    <td className="py-2 pr-3 font-mono text-ink-100">{f.cylinder_code}</td>
+                    <td className="py-2 pr-3 font-mono text-ink-100">
+                      {f.cylinder_code}
+                      {f.recheck_count > 0 && (
+                        <span className="ml-1 text-[10px] text-recheck-400">×{f.recheck_count}</span>
+                      )}
+                    </td>
                     <td className="py-2 pr-3 font-mono text-ink-300">
                       {f.filling_weight} / {f.target_weight}
                     </td>
@@ -334,6 +442,9 @@ export default function Filling() {
                       <span className={cn(f.weight_diff! > 0 ? 'text-safety-400' : f.weight_diff! < 0 ? 'text-ok-400' : 'text-ink-400')}>
                         {f.weight_diff! > 0 ? '+' : ''}{f.weight_diff}
                       </span>
+                    </td>
+                    <td className="py-2 pr-3 font-mono text-xs text-ink-400">
+                      {f.recheck_count > 0 ? `${f.recheck_count}次` : '—'}
                     </td>
                     <td className="py-2 pr-3"><FillingStatusBadge status={f.status} /></td>
                     <td className="py-2 pr-3">

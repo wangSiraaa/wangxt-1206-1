@@ -6,20 +6,30 @@ import {
   CheckCircle2,
   Info,
   X,
+  Lock,
+  Unlock,
   type LucideIcon,
 } from 'lucide-react';
 import { useAppStore, type ToastKind } from '../store';
-import type { FillingStatus, InspectionResult, BlockCode } from '@shared/types';
+import type { FillingStatus, InspectionResult, BlockCode, LockType } from '@shared/types';
 import { cn } from '../lib/utils';
 
 const BLOCK_CODE_LABEL: Record<BlockCode, string> = {
   CYLINDER_OVERDUE: '超期未检',
   WEIGHT_OUT_OF_TOLERANCE: '重量超差',
   RECORD_LOCKED_DELIVERED: '记录锁定',
+  CYLINDER_LOCKED: '钢瓶锁定',
+  RECHECK_EXCEEDED: '复称超限',
+};
+
+const LOCK_TYPE_LABEL: Record<LockType, string> = {
+  WEIGHT: '重量异常',
+  OVERDUE: '超期未检',
+  MANUAL: '手动锁定',
 };
 
 export function BlockCodeBadge({ code }: { code: BlockCode }) {
-  const isHard = code === 'CYLINDER_OVERDUE' || code === 'RECORD_LOCKED_DELIVERED';
+  const isHard = code === 'CYLINDER_OVERDUE' || code === 'RECORD_LOCKED_DELIVERED' || code === 'CYLINDER_LOCKED' || code === 'RECHECK_EXCEEDED';
   return (
     <span
       className={cn(
@@ -33,6 +43,46 @@ export function BlockCodeBadge({ code }: { code: BlockCode }) {
       <span className="opacity-60">·</span>
       {BLOCK_CODE_LABEL[code]}
     </span>
+  );
+}
+
+export function LockTypeBadge({ type }: { type: LockType }) {
+  return (
+    <span className="chip border-hazard-600/50 bg-hazard-500/10 text-hazard-400">
+      <Lock className="w-3 h-3 mr-1" />
+      {LOCK_TYPE_LABEL[type]}
+    </span>
+  );
+}
+
+export function LockBanner({ reason, lockedAt, onUnlock }: { reason: string | null; lockedAt: string | null; onUnlock?: () => void }) {
+  return (
+    <div className="rounded-lg border border-hazard-600/60 bg-hazard-500/10 px-4 py-3 scanline">
+      <div className="flex items-start gap-3">
+        <Lock className="w-5 h-5 text-hazard-400 shrink-0 mt-0.5 animate-pulse" />
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="font-mono text-xs font-semibold text-hazard-300 tracking-wide">
+              钢瓶已锁定
+            </span>
+            {lockedAt && (
+              <span className="font-mono text-[10px] text-ink-400">
+                {new Date(lockedAt).toLocaleString('zh-CN', { hour12: false })}
+              </span>
+            )}
+          </div>
+          <p className="text-sm text-ink-100 mt-0.5">{reason ?? '未知原因'}</p>
+          {onUnlock && (
+            <button
+              onClick={onUnlock}
+              className="mt-2 text-xs font-mono text-hazard-400 hover:text-hazard-300 flex items-center gap-1"
+            >
+              <Unlock className="w-3 h-3" /> 申请解锁
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -77,12 +127,14 @@ export function StatCard({
   unit,
   icon: Icon,
   tone = 'default',
+  onClick,
 }: {
   label: string;
   value: ReactNode;
   unit?: string;
   icon?: LucideIcon;
   tone?: 'default' | 'warn' | 'danger' | 'ok';
+  onClick?: () => void;
 }) {
   const toneCls = {
     default: 'text-ink-100',
@@ -91,7 +143,7 @@ export function StatCard({
     ok: 'text-ok-400',
   }[tone];
   return (
-    <Panel className="relative overflow-hidden">
+    <Panel className={cn('relative overflow-hidden', onClick && 'cursor-pointer hover:border-ink-500 transition-colors')} onClick={onClick}>
       <div className="flex items-start justify-between">
         <div>
           <div className="label-tag mb-2">{label}</div>
@@ -112,6 +164,10 @@ export function FillingStatusBadge({ status }: { status: FillingStatus }) {
     recheck: { label: '复称中', cls: 'border-recheck-500/50 bg-recheck-500/10 text-recheck-400' },
     blocked_overdue: {
       label: '超期阻断',
+      cls: 'border-hazard-600/50 bg-hazard-500/10 text-hazard-400',
+    },
+    blocked_weight: {
+      label: '复称锁定',
       cls: 'border-hazard-600/50 bg-hazard-500/10 text-hazard-400',
     },
   };
@@ -186,6 +242,17 @@ export function BlockBanner({
           </div>
           <p className="text-sm text-ink-100 mt-0.5">{message}</p>
         </div>
+      </div>
+    </div>
+  );
+}
+
+export function InfoBanner({ message }: { message: string }) {
+  return (
+    <div className="rounded-lg border border-ink-600 bg-ink-800/50 px-4 py-3">
+      <div className="flex items-start gap-3">
+        <Info className="w-5 h-5 text-ink-400 shrink-0 mt-0.5" />
+        <p className="text-sm text-ink-200">{message}</p>
       </div>
     </div>
   );

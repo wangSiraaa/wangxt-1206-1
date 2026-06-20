@@ -10,6 +10,9 @@ import type {
   BlockCode,
   TraceRecord,
   Stats,
+  SpotCheck,
+  CylinderLock,
+  LockType,
 } from '../shared/types.js';
 
 type Row = Record<string, unknown>;
@@ -23,6 +26,9 @@ function rowToCylinder(r: Row): Cylinder {
     tolerance: Number(r.tolerance),
     inspection_date: (r.inspection_date as string | null) ?? null,
     inspection_expiry: (r.inspection_expiry as string | null) ?? null,
+    locked: r.locked != null ? Number(r.locked) : 0,
+    lock_reason: (r.lock_reason as string | null) ?? null,
+    locked_at: (r.locked_at as string | null) ?? null,
     created_at: String(r.created_at),
   };
 }
@@ -37,6 +43,9 @@ function rowToFilling(r: Row): FillingRecord {
     filling_weight: r.filling_weight == null ? null : Number(r.filling_weight),
     weight_diff: r.weight_diff == null ? null : Number(r.weight_diff),
     status: String(r.status) as FillingStatus,
+    recheck_count: r.recheck_count != null ? Number(r.recheck_count) : 0,
+    first_weight: r.first_weight == null ? null : Number(r.first_weight),
+    second_weight: r.second_weight == null ? null : Number(r.second_weight),
     delivered: Number(r.delivered),
     created_at: String(r.created_at),
     updated_at: String(r.updated_at),
@@ -66,6 +75,30 @@ function rowToInspection(r: Row): Inspection {
   };
 }
 
+function rowToSpotCheck(r: Row): SpotCheck {
+  return {
+    id: Number(r.id),
+    cylinder_code: String(r.cylinder_code),
+    filling_id: Number(r.filling_id),
+    inspector: String(r.inspector),
+    result: String(r.result) as InspectionResult,
+    remark: (r.remark as string | null) ?? null,
+    created_at: String(r.created_at),
+  };
+}
+
+function rowToCylinderLock(r: Row): CylinderLock {
+  return {
+    id: Number(r.id),
+    cylinder_code: String(r.cylinder_code),
+    lock_type: String(r.lock_type) as LockType,
+    lock_reason: String(r.lock_reason),
+    operator: (r.operator as string | null) ?? null,
+    filling_id: r.filling_id == null ? null : Number(r.filling_id),
+    created_at: String(r.created_at),
+  };
+}
+
 function rowToAnomaly(r: Row): AnomalyLog {
   return {
     id: Number(r.id),
@@ -87,6 +120,10 @@ export const repo = {
     const rows = db.prepare('SELECT * FROM cylinders ORDER BY id ASC').all() as Row[];
     return rows.map(rowToCylinder);
   },
+  listLockedCylinders(): Cylinder[] {
+    const rows = db.prepare('SELECT * FROM cylinders WHERE locked = 1 ORDER BY locked_at DESC').all() as Row[];
+    return rows.map(rowToCylinder);
+  },
   createCylinder(c: {
     cylinder_code: string;
     spec: string;
@@ -97,8 +134,8 @@ export const repo = {
   }): Cylinder {
     const res = db
       .prepare(
-        `INSERT INTO cylinders (cylinder_code, spec, target_weight, tolerance, inspection_date, inspection_expiry, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO cylinders (cylinder_code, spec, target_weight, tolerance, inspection_date, inspection_expiry, locked, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, 0, ?)`,
       )
       .run(
         c.cylinder_code,
@@ -118,6 +155,27 @@ export const repo = {
     ).run(inspectionDate, expiry, code);
     return repo.getCylinder(code);
   },
+  lockCylinder(code: string, lockType: LockType, reason: string, operator: string | null, fillingId: number | null): Cylinder | undefined {
+    const ts = nowISO();
+    db.prepare(
+      'UPDATE cylinders SET locked = 1, lock_reason = ?, locked_at = ? WHERE cylinder_code = ?',
+    ).run(reason, ts, code);
+    db.prepare(
+      `INSERT INTO cylinder_locks (cylinder_code, lock_type, lock_reason, operator, filling_id, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run(code, lockType, reason, operator, fillingId, ts);
+    return repo.getCylinder(code);
+  },
+  unlockCylinder(code: string): Cylinder | undefined {
+    db.prepare(
+      'UPDATE cylinders SET locked = 0, lock_reason = NULL, locked_at = NULL WHERE cylinder_code = ?',
+    ).run(code);
+    return repo.getCylinder(code);
+  },
+  listCylinderLocks(code: string): CylinderLock[] {
+    const rows = db.prepare('SELECT * FROM cylinder_locks WHERE cylinder_code = ? ORDER BY id DESC').all(code) as Row[];
+    return rows.map(rowToCylinderLock);
+  },
 
   // ---- filling ----
   createFilling(data: {
@@ -133,8 +191,8 @@ export const repo = {
     const res = db
       .prepare(
         `INSERT INTO filling_records
-         (cylinder_code, station, operator, target_weight, filling_weight, weight_diff, status, delivered, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
+         (cylinder_code, station, operator, target_weight, filling_weight, weight_diff, status, recheck_count, first_weight, delivered, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, 0, ?, ?)`,
       )
       .run(
         data.cylinder_code,
@@ -144,6 +202,7 @@ export const repo = {
         data.filling_weight,
         data.weight_diff,
         data.status,
+        data.filling_weight,
         ts,
         ts,
       );
@@ -175,10 +234,21 @@ export const repo = {
     const rows = db.prepare(sql).all(...params) as Row[];
     return rows.map(rowToFilling);
   },
-  updateFillingWeight(id: number, weight: number, diff: number, status: FillingStatus): FillingRecord | undefined {
-    db.prepare(
-      `UPDATE filling_records SET filling_weight = ?, weight_diff = ?, status = ?, updated_at = ? WHERE id = ?`,
-    ).run(weight, diff, status, nowISO(), id);
+  updateFillingWeight(id: number, weight: number, diff: number, status: FillingStatus, recheckCount: number): FillingRecord | undefined {
+    const current = repo.getFilling(id);
+    if (!current) return undefined;
+    const updates: string[] = ['filling_weight = ?', 'weight_diff = ?', 'status = ?', 'recheck_count = ?', 'updated_at = ?'];
+    const params: (string | number)[] = [weight, diff, status, recheckCount, nowISO()];
+    if (recheckCount === 1 && current.first_weight == null) {
+      updates.push('first_weight = ?');
+      params.push(current.filling_weight ?? weight);
+    }
+    if (recheckCount === 2) {
+      updates.push('second_weight = ?');
+      params.push(weight);
+    }
+    params.push(id);
+    db.prepare(`UPDATE filling_records SET ${updates.join(', ')} WHERE id = ?`).run(...params);
     return repo.getFilling(id);
   },
   markDelivered(id: number): void {
@@ -240,6 +310,41 @@ export const repo = {
     const rows = db.prepare('SELECT * FROM inspections ORDER BY id DESC').all() as Row[];
     return rows.map(rowToInspection);
   },
+  latestInspectionForCode(code: string): Inspection | undefined {
+    const row = db
+      .prepare('SELECT * FROM inspections WHERE cylinder_code = ? ORDER BY id DESC LIMIT 1')
+      .get(code) as Row | undefined;
+    return row ? rowToInspection(row) : undefined;
+  },
+
+  // ---- spot checks ----
+  createSpotCheck(data: {
+    cylinder_code: string;
+    filling_id: number;
+    inspector: string;
+    result: InspectionResult;
+    remark: string | null;
+  }): SpotCheck {
+    const res = db
+      .prepare(
+        `INSERT INTO spot_checks (cylinder_code, filling_id, inspector, result, remark, created_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      )
+      .run(data.cylinder_code, data.filling_id, data.inspector, data.result, data.remark, nowISO());
+    const row = db.prepare('SELECT * FROM spot_checks WHERE id = ?').get(Number(res.lastInsertRowid)) as Row;
+    return rowToSpotCheck(row);
+  },
+  listSpotChecks(code?: string): SpotCheck[] {
+    const sql = code
+      ? 'SELECT * FROM spot_checks WHERE cylinder_code = ? ORDER BY id DESC'
+      : 'SELECT * FROM spot_checks ORDER BY id DESC';
+    const rows = (code ? db.prepare(sql).all(code) : db.prepare(sql).all()) as Row[];
+    return rows.map(rowToSpotCheck);
+  },
+  spotChecksForFilling(fillingId: number): SpotCheck[] {
+    const rows = db.prepare('SELECT * FROM spot_checks WHERE filling_id = ? ORDER BY id ASC').all(fillingId) as Row[];
+    return rows.map(rowToSpotCheck);
+  },
 
   // ---- anomalies ----
   logAnomaly(data: { block_code: BlockCode; cylinder_code: string | null; detail: string; operator: string | null }): AnomalyLog {
@@ -268,11 +373,19 @@ export const repo = {
     const fillings = db.prepare('SELECT * FROM filling_records WHERE cylinder_code = ? ORDER BY id ASC').all(code) as Row[];
     const deliveries = db.prepare('SELECT * FROM delivery_records WHERE cylinder_code = ? ORDER BY id ASC').all(code) as Row[];
     const inspections = db.prepare('SELECT * FROM inspections WHERE cylinder_code = ? ORDER BY id ASC').all(code) as Row[];
+    const spotChecks = db.prepare('SELECT * FROM spot_checks WHERE cylinder_code = ? ORDER BY id ASC').all(code) as Row[];
+    const locks = db.prepare('SELECT * FROM cylinder_locks WHERE cylinder_code = ? ORDER BY id ASC').all(code) as Row[];
+    const latestInsp = repo.latestInspectionForCode(code);
+    const latestDel = deliveries.length > 0 ? rowToDelivery(deliveries[deliveries.length - 1]) : null;
     return {
       cylinder,
       fillings: fillings.map(rowToFilling),
       deliveries: deliveries.map(rowToDelivery),
       inspections: inspections.map(rowToInspection),
+      spotChecks: spotChecks.map(rowToSpotCheck),
+      locks: locks.map(rowToCylinderLock),
+      latestInspection: latestInsp ?? null,
+      latestDelivery: latestDel,
     };
   },
 
@@ -288,6 +401,9 @@ export const repo = {
       (db.prepare('SELECT COUNT(*) AS c FROM delivery_records').get() as Row).c,
     );
     const blocked = repo.countAnomalies();
+    const locked = Number(
+      (db.prepare('SELECT COUNT(*) AS c FROM cylinders WHERE locked = 1').get() as Row).c,
+    );
     const totalIns = Number((db.prepare('SELECT COUNT(*) AS c FROM inspections').get() as Row).c);
     const abnormalIns = Number(
       (
@@ -299,6 +415,7 @@ export const repo = {
       fillings_today: fillingsToday,
       in_delivery: inDelivery,
       blocked_count: blocked,
+      locked_cylinders: locked,
       inspection_abnormal_rate: totalIns === 0 ? 0 : Math.round((abnormalIns / totalIns) * 1000) / 10,
     };
   },

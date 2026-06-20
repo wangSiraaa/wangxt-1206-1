@@ -8,6 +8,9 @@ import type {
   TraceRecord,
   Stats,
   BlockCode,
+  SpotCheck,
+  CylinderLock,
+  InspectionResult,
 } from '@shared/types';
 
 export class ApiError extends Error {
@@ -49,6 +52,7 @@ function qs(params: Record<string, string | undefined>): string {
 
 export const api = {
   listCylinders: () => request<Cylinder[]>('/cylinders'),
+  listLockedCylinders: () => request<Cylinder[]>('/cylinders/locked'),
   getCylinder: (code: string) => request<Cylinder>(`/cylinders/${encodeURIComponent(code)}`),
   createCylinder: (body: Partial<Cylinder>) =>
     request<Cylinder>('/cylinders', { method: 'POST', body: JSON.stringify(body) }),
@@ -57,6 +61,10 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify(body),
     }),
+  unlockCylinder: (code: string) =>
+    request<Cylinder>(`/cylinders/${encodeURIComponent(code)}/unlock`, { method: 'POST' }),
+  listCylinderLocks: (code: string) =>
+    request<CylinderLock[]>(`/cylinders/${encodeURIComponent(code)}/locks`),
 
   listFillings: (filter: { status?: string; code?: string } = {}) =>
     request<FillingRecord[]>(`/filling${qs(filter)}`),
@@ -79,6 +87,18 @@ export const api = {
     remark?: string;
   }) => request<Inspection>('/inspect', { method: 'POST', body: JSON.stringify(body) }),
 
+  listSpotChecks: (code?: string) =>
+    request<SpotCheck[]>(`/spot-checks${qs({ code })}`),
+  listSpotChecksForFilling: (fillingId: number) =>
+    request<SpotCheck[]>(`/spot-checks/filling/${fillingId}`),
+  createSpotCheck: (body: {
+    cylinder_code: string;
+    filling_id: number;
+    inspector: string;
+    result: InspectionResult;
+    remark?: string;
+  }) => request<SpotCheck>('/spot-checks', { method: 'POST', body: JSON.stringify(body) }),
+
   getTrace: (code: string) => request<TraceRecord>(`/trace/${encodeURIComponent(code)}`),
   listAnomalies: (limit = 100) => request<AnomalyLog[]>(`/anomalies${qs({ limit: String(limit) })}`),
   getStats: () => request<Stats>('/stats'),
@@ -89,6 +109,8 @@ export function isBlockCode(code: unknown): code is BlockCode {
   return (
     code === 'CYLINDER_OVERDUE' ||
     code === 'WEIGHT_OUT_OF_TOLERANCE' ||
-    code === 'RECORD_LOCKED_DELIVERED'
+    code === 'RECORD_LOCKED_DELIVERED' ||
+    code === 'CYLINDER_LOCKED' ||
+    code === 'RECHECK_EXCEEDED'
   );
 }
